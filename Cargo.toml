@@ -1,0 +1,50 @@
+[package]
+name = "sword-modules"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+description = "Pure-Rust reader for CrossWire SWORD modules (Bibles, commentaries, lexicons, general books) and their OSIS/ThML/GBF/TEI markup"
+license = "CC0-1.0"
+keywords = ["bible", "sword", "osis", "crosswire", "andbible"]
+categories = ["parser-implementations", "text-processing"]
+
+[features]
+default = ["zip", "bzip2", "xz", "install", "https"]
+## CompressType=ZIP (by far the most common)
+zip = ["dep:flate2"]
+## CompressType=BZIP2
+bzip2 = ["dep:bzip2"]
+## CompressType=XZ
+xz = ["dep:lzma-rs"]
+## Install modules from repositories, local zips or URLs (HTTP listings, FTP and
+## file:// are handled in-crate; plug in your own `Transport` for anything else).
+install = ["zip", "dep:zip-archive", "dep:tar"]
+## Built-in HTTP(S) transport (ureq + rustls). Disable to supply your own client,
+## e.g. the platform HTTP stack on Android/iOS.
+https = ["install", "dep:ureq"]
+
+[dependencies]
+flate2 = { version = "1", optional = true, default-features = false, features = ["rust_backend"] }
+bzip2 = { version = "0.6", optional = true }
+lzma-rs = { version = "0.3", optional = true }
+# Verse references: book ids, passages and their parsing. A local checkout until topos 0.6 is released.
+topos-bible = { path = "../topos/crates/topos-lib" }
+# Entry markup (OSIS, ThML, GBF, TEI): one tree, plain text and HTML. Also a local checkout.
+topos-bible-markup = { path = "../topos/crates/topos-markup" }
+zip-archive = { package = "zip", version = "8", optional = true, default-features = false, features = ["deflate-flate2"] }
+tar = { version = "0.4", optional = true }
+ureq = { version = "3", optional = true }
+
+[dev-dependencies]
+tar = "0.4"
+flate2 = "1"
+
+# The CLI example installs modules too.
+[[example]]
+name = "sword"
+required-features = ["install"]
+
+[lints.clippy]
+# tests/fixtures.rs's smoke test counts entries through `map` on purpose (it parses each
+# one); the handed-over tests are kept unchanged.
+suspicious_map = "allow"

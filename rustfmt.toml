@@ -1,0 +1,5 @@
+max_width = 200
+use_small_heuristics = "Max"
+# These three files were handed over hand-formatted in a way no single rustfmt
+# configuration reproduces; they must stay unchanged, so rustfmt leaves them alone.
+ignore = ["tests/install.rs", "examples/sword.rs", "examples/compare_imp.rs"]
