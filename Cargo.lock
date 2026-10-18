@@ -290,15 +290,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "quick-xml"
-version = "0.42.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41b1177fdf999d2321d3fb46ff47159d9c1fb9ad66a4879f8c50a0b504615e9b"
-dependencies = [
- "memchr",
-]
-
-[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -492,7 +483,6 @@ dependencies = [
  "lzma-rs",
  "tar",
  "topos-bible",
- "topos-bible-markup",
  "ureq",
  "zip",
 ]
@@ -552,7 +542,7 @@ dependencies = [
 
 [[package]]
 name = "topos-bible"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "derive_more",
  "itertools",
@@ -562,14 +552,6 @@ dependencies = [
  "serde_json",
  "smallvec",
  "thiserror",
-]
-
-[[package]]
-name = "topos-bible-markup"
-version = "0.5.0"
-dependencies = [
- "quick-xml",
- "topos-bible",
 ]
 
 [[package]]
@@ -768,3 +750,4 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+

@@ -3,8 +3,11 @@ name = "sword-modules"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.88"
-description = "Pure-Rust reader for CrossWire SWORD modules (Bibles, commentaries, lexicons, general books) and their OSIS/ThML/GBF/TEI markup"
+description = "Pure-Rust reader for CrossWire SWORD modules (Bibles, commentaries, lexicons, general books): confs, indexes, and entries with their markup named"
 license = "CC0-1.0"
+repository = "https://github.com/Logoxide/sword-modules"
+readme = "README.md"
+exclude = ["CLAUDE.md"]
 keywords = ["bible", "sword", "osis", "crosswire", "andbible"]
 categories = ["parser-implementations", "text-processing"]
 
@@ -27,10 +30,8 @@ https = ["install", "dep:ureq"]
 flate2 = { version = "1", optional = true, default-features = false, features = ["rust_backend"] }
 bzip2 = { version = "0.6", optional = true }
 lzma-rs = { version = "0.3", optional = true }
-# Verse references: book ids, passages and their parsing. A local checkout until topos 0.6 is released.
-topos-bible = { path = "../topos/crates/topos-lib" }
-# Entry markup (OSIS, ThML, GBF, TEI): one tree, plain text and HTML. Also a local checkout.
-topos-bible-markup = { path = "../topos/crates/topos-markup" }
+# Verse references: book ids, passages and their parsing
+topos-bible = "0.6.0"
 zip-archive = { package = "zip", version = "8", optional = true, default-features = false, features = ["deflate-flate2"] }
 tar = { version = "0.4", optional = true }
 ureq = { version = "3", optional = true }

@@ -61,7 +61,7 @@ here comes from libsword's code.
   the first that is found and resolves to an entry:
   1. with a suffix (`H0430a`): the bare padded key with it (`00430a`), then the prefixed one
      (`H0430a`);
-  2. the bare key, zero-padded to five digits (`Strongs::dictionary_key`, `00025`);
+  2. the bare key, zero-padded to five digits (`00025`);
   3. the prefixed key, the language letter and the number zero-padded to four digits (`G0025`).
 
   Reasoning: the doc comment names exactly the plain padded form and the prefixed one.
@@ -73,6 +73,11 @@ here comes from libsword's code.
   specific entry, then dropped because these lexicons have one entry per number. A key that is
   found but whose `@LINK` leads nowhere doesn't stop the search. Checked on all five dictionary
   formats in the fixtures (`G25`, `H0430a`, `g5600`, and `H1` found; `G26` and `H123456` not).
+  Since the markup dependency went (October 2026) the number is a string, not a `Strongs`: the
+  letter `G` or `H` in either case (it gives the prefix, always written upper-case), digits (read
+  as a number, so `G0025` is `G25`; more than fits a `u32` finds nothing), and an optional suffix
+  of ASCII letters, with surrounding whitespace ignored; any other string finds nothing. The keys
+  tried and their order are unchanged.
 * **Empty entries.** An entry whose normalised text is empty is no entry (as for
   verse modules); `iter()` skips it.
 * **RawLD with a cipher key** (no fixture; `osis2mod` never makes one): only the

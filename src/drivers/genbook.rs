@@ -1,9 +1,8 @@
 //! Tree-keyed storage: RawGenBook.
 
-use std::path::Path;
-
 use super::{i32_at, read_file, u16_at, u32_at, DataFile};
 use crate::error::{Error, Result};
+use crate::files::Files;
 
 /// A node of a general book's table of contents.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,16 +48,12 @@ fn link(v: Option<i32>) -> Option<u32> {
 }
 
 impl TreeStore {
-    pub(crate) fn open(prefix: &Path, cipher: Option<Vec<u8>>) -> Result<TreeStore> {
-        let with_ext = |ext: &str| {
-            let mut p = prefix.as_os_str().to_owned();
-            p.push(ext);
-            std::path::PathBuf::from(p)
-        };
-        let idx = read_file(&with_ext(".idx"))?;
-        let dat = read_file(&with_ext(".dat"))?;
-        let bdt = DataFile::open(&with_ext(".bdt"))?;
-        let store = TreeStore { prefix: prefix.display().to_string(), idx, dat, bdt, cipher };
+    pub(crate) fn open(files: &dyn Files, prefix: &str, cipher: Option<Vec<u8>>) -> Result<TreeStore> {
+        let with_ext = |ext: &str| format!("{prefix}{ext}");
+        let idx = read_file(files, &with_ext(".idx"))?;
+        let dat = read_file(files, &with_ext(".dat"))?;
+        let bdt = DataFile::open(files, &with_ext(".bdt"))?;
+        let store = TreeStore { prefix: prefix.to_string(), idx, dat, bdt, cipher };
         // The root must be readable.
         store.node(0)?;
         Ok(store)

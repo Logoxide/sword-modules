@@ -153,8 +153,26 @@ pub enum ModuleKind {
 impl ModuleKind {
     pub fn as_str(self) -> &'static str;
 
-/// Markup used inside entries (`SourceType`).
-pub use topos_bible_markup::Markup;
+/// Markup used inside entries: the conf's `SourceType`. This crate only names it;
+/// parsing and rendering entries is left to the caller (logoxide's `logoxide-markup`, for
+/// one), which reads [`Entry::raw`](crate::Entry) with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Markup {
+    Osis,
+    Thml,
+    Gbf,
+    Tei,
+    /// `Plaintext`, and any `SourceType` this crate doesn't know.
+    Plaintext,
+}
+
+impl Markup {
+    /// A markup by its `SourceType` name, ignoring case: `OSIS`, `ThML`, `GBF`, `TEI`,
+    /// `Plaintext` or `Plain`. `None` for any other name.
+    pub fn from_name(name: &str) -> Option<Markup>;
+
+    /// The `SourceType` name as confs spell it: `OSIS`, `ThML`, `GBF`, `TEI`, `Plaintext`.
+    pub fn as_str(self) -> &'static str;
 
 /// Compression used by z* drivers (`CompressType`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -300,6 +318,65 @@ impl From<io::Error> for Error { … }
 
 
 pub type Result<T> = std::result::Result<T, Error>;
+```
+
+## `src/files.rs`
+
+```rust
+//! Where a library's files are read from: a folder on disk ([`FsFiles`]), or anything else
+//! that can hand over a file's bytes (memory, a host's files in WebAssembly), so the readers
+//! never touch the file system themselves. Paths are `/`-separated and relative to the
+//! library root (`mods.d/kjv.conf`, `modules/texts/ztext/kjv/ot.bzs`).
+
+/// A library's files.
+pub trait Files: Send + Sync {
+    /// A whole file, or `None` when it does not exist.
+    fn read(&self, path: &str) -> Result<Option<Vec<u8>>>;
+
+    /// The names of the files (not folders) directly in a folder, in any order; empty when
+    /// the folder does not exist.
+    fn list(&self, dir: &str) -> Result<Vec<String>>;
+
+    /// A file to read in pieces (data files can be large), or `None` when it does not exist.
+    /// The default reads the whole file with [`read`](Files::read).
+    fn open(&self, path: &str) -> Result<Option<Box<dyn FileReader>>>;
+}
+
+/// A file opened for reading at offsets.
+pub trait FileReader: Send + Sync {
+    /// Its size in bytes.
+    fn size(&self) -> u64;
+
+    /// Fill `buf` from `offset`; an error when the file is shorter.
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()>;
+}
+
+/// A file's bytes in memory.
+impl FileReader for Vec<u8> { … }
+
+/// A folder on disk: the library root.
+#[derive(Debug, Clone)]
+pub struct FsFiles { /* private fields */ }
+
+impl FsFiles {
+    pub fn new(root: impl Into<PathBuf>) -> Self;
+
+    pub fn root(&self) -> &Path;
+
+/// Reads files from disk, opening data files once and reading them at offsets.
+impl Files for FsFiles { … }
+
+/// Files kept in memory, by path (an unpacked module zip, a test).
+#[derive(Debug, Clone, Default)]
+pub struct MemoryFiles { /* private fields */ }
+
+impl MemoryFiles {
+    pub fn new() -> Self;
+
+    /// Add (or replace) a file.
+    pub fn insert(&mut self, path: impl Into<String>, bytes: Vec<u8>);
+
+impl Files for MemoryFiles { … }
 ```
 
 ## `src/install/ftp.rs`
@@ -535,14 +612,22 @@ pub use error::{Error, Result};
 
 pub use library::SwordLibrary;
 
-/// Entry markup: one tree for OSIS, ThML, GBF and TEI, with plain text, HTML, filters and search.
-pub use topos_bible_markup as markup;
+pub use files::{FileReader, Files, FsFiles, MemoryFiles};
 
-pub use markup::{Filter, HtmlRenderer, Kind, Node, Strongs, TextOptions};
-
-pub use module::{DictionaryModule, Entry, GenBookModule, Module, VerseModule};
+pub use module::{DictionaryModule, Entry, EntryLocation, GenBookModule, Module, VerseModule, VerseSpan};
 
 pub use versification::{bible_data, IndexPos, Testament, VerseKey, Versification};
+
+// No markup: the crate depends on no markup crate and parses no entry markup. An entry is its
+// `raw` text and its `Markup` (the conf's `SourceType`); callers parse it themselves. Removed
+// with the markup dependency (October 2026): the `markup` re-export of topos-bible-markup and
+// its `Filter`, `HtmlRenderer`, `Kind`, `Node`, `Strongs`, `StrongsLang`, `TextOptions`;
+// `Entry::nodes`, `plain_text`, `plain_text_with`, `html` and `strongs`; and
+// `DictionaryModule::strongs_language` and `strongs_at` (a caller reads the language from
+// `conf().features()` and the key with `key_at`, and parses it). `get_strongs` takes the number
+// as a string (`G25`). Kept, since they use only topos-bible (`Passage`, `BookId`), which isn't
+// markup: `VerseModule::iter_spans` and `location`, `EntryLocation`, `VerseSpan` with
+// `passage` and `osis_ref`, and `DictionaryModule::link_at`.
 
 /// The verse reference library: book data, passages and their parsing.
 pub use topos_bible as topos;
@@ -573,6 +658,16 @@ impl SwordLibrary {
     /// Register a module conf whose data lives under `root`.
     pub fn add_module(&mut self, root: impl Into<PathBuf>, conf: ModuleConf);
 
+    /// Scan `mods.d/*.conf` in `files` (as [`open`](Self::open) does a folder), e.g. a
+    /// module zip unpacked into [`MemoryFiles`].
+    pub fn open_files(files: Arc<dyn Files>) -> Result<SwordLibrary>;
+
+    /// Add another library's files (later ones do not replace modules already found).
+    pub fn add_files(&mut self, files: Arc<dyn Files>) -> Result<()>;
+
+    /// Register a module conf whose data is in `files`.
+    pub fn add_module_files(&mut self, files: Arc<dyn Files>, conf: ModuleConf);
+
     /// All module confs.
     pub fn modules(&self) -> impl Iterator<Item = &ModuleConf>;
 
@@ -600,30 +695,17 @@ impl SwordLibrary {
 ## `src/module.rs`
 
 ```rust
-/// The text of one entry plus the markup needed to interpret it.
+/// The text of one entry plus the markup needed to interpret it. The crate doesn't parse
+/// markup: callers parse `raw` as `markup` says (no methods; plain data).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     /// Entry text after deciphering, whitespace normalisation (`docs/spec/entry-text.md`) and
     /// decoding to UTF-8 — markup still included.
     pub raw: String,
+    /// The conf's `SourceType`, or for a conf without one, the markup the text looks like
+    /// (`docs/spec/gaps.md`).
     pub markup: Markup,
 }
-
-impl Entry {
-    /// Parse into a node tree.
-    pub fn nodes(&self) -> Vec<Node>;
-
-    /// Plain text with default [`TextOptions`] (no notes, titles or metadata).
-    pub fn plain_text(&self) -> String;
-
-    pub fn plain_text_with(&self, opts: &TextOptions) -> String;
-
-    /// Stand-alone HTML. Use one [`HtmlRenderer`] across a passage instead to
-    /// carry red-letter state between verses.
-    pub fn html(&self) -> String;
-
-    /// Strong's numbers in reading order.
-    pub fn strongs(&self) -> Vec<Strongs>;
 
 /// Any opened module.
 pub enum Module {
@@ -636,6 +718,9 @@ impl Module {
     /// Open a module whose `DataPath` is relative to `library_root` (the directory
     /// containing `mods.d/` and `modules/`).
     pub fn open(library_root: impl AsRef<Path>, conf: ModuleConf) -> Result<Module>;
+
+    /// Open a module whose `DataPath` is relative to the root of `files`.
+    pub fn open_files(files: Arc<dyn Files>, conf: ModuleConf) -> Result<Module>;
 
     pub fn conf(&self) -> &ModuleConf;
 
@@ -694,7 +779,7 @@ impl VerseModule {
     /// let kjv = lib.open_module("KJV")?.into_verse()?;
     /// let passage = sword_modules::bible_data().parse("Jn 3:16-18; 5").expect("a reference");
     /// for (key, entry) in kjv.passage(&passage)? {
-    ///     println!("{key}: {}", entry.plain_text());
+    ///     println!("{key}: {}", entry.raw);
     /// }
     /// # Ok::<(), sword_modules::Error>(())
     /// ```
@@ -717,6 +802,75 @@ impl VerseModule {
     /// order. Module and testament headings are skipped; read them with
     /// [`at`](Self::at) at slots 0 and 1 if needed.
     pub fn iter(&self) -> impl Iterator<Item = Result<(VerseKey, Entry)>> + '_;
+
+    /// Where the entry at a verse is stored, or `None` when the verse is not in the
+    /// versification or its index entry is empty (a zero length). Two verses share one
+    /// stored entry (are linked, `docs/spec/formats.md`) exactly when their locations
+    /// are equal.
+    pub fn location(&self, key: &VerseKey) -> Option<EntryLocation>;
+
+    /// Like [`iter`](Self::iter), but each run of linked verses is one item: a
+    /// [`VerseSpan`] from its first verse to its last, read once. A run is made of
+    /// slots in index order whose locations are equal, with these rules:
+    ///
+    /// * It never leaves a book: a link from John 21:25 to Acts 1:1 gives two spans
+    ///   with the same location.
+    /// * Within a book, empty slots that are chapter introductions (verse 0, a zero
+    ///   length) are passed over, so `osis2mod`'s John 3:36 + 4:1-2 (with an empty
+    ///   John 4:0) is one span, John 3:36 to John 4:2, as is `imp2vs`'s John 6:71-7:1
+    ///   (whose John 7:0 is linked too). A chapter introduction with other text, or
+    ///   any verse (verse 1 or more) with other text or none, ends the run.
+    /// * Slots that share an entry but are not in one run (John 3:16 and 3:18 with
+    ///   3:17 between them holding other text or none) are separate spans with the
+    ///   same location; callers that want to treat them as one entry compare
+    ///   locations.
+    /// * A span can start at an introduction (John 7:0 linked to 7:1 is the span
+    ///   John 7:0 to John 7:1); slots 0 and 1 (module and testament headings) are
+    ///   skipped, as by [`iter`](Self::iter).
+    /// * A span whose entry reads as empty (after normalisation) is skipped, as
+    ///   [`iter`](Self::iter) skips such a verse.
+    ///
+    /// Bibles are read the same way (some link verses a translation joins).
+    /// Personal notes compare the index entries that name note files.
+    ///
+    /// ```no_run
+    /// # let lib = sword_modules::SwordLibrary::open("/usr/share/sword")?;
+    /// let mhc = lib.open_module("MHC")?.into_verse()?;
+    /// for span in mhc.iter_spans() {
+    ///     let span = span?;
+    ///     println!("{}: {}", span.osis_ref().unwrap_or_default(), span.entry.raw);
+    /// }
+    /// # Ok::<(), sword_modules::Error>(())
+    /// ```
+    pub fn iter_spans(&self) -> impl Iterator<Item = Result<VerseSpan>> + '_;
+
+/// Where a verse module's entry is stored: its testament and its index entry (offset
+/// and length; for compressed modules block, offset in the block and length). Opaque,
+/// for comparing: equal locations are one stored entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct EntryLocation { /* private fields */ }
+
+/// A run of linked verses sharing one entry ([`VerseModule::iter_spans`]): from
+/// `first` to `last` (equal for a verse that is not linked), always in one book.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerseSpan {
+    pub first: VerseKey,
+    pub last: VerseKey,
+    /// Where the entry is stored; other spans with the same location share it.
+    pub location: EntryLocation,
+    pub entry: Entry,
+}
+
+impl VerseSpan {
+    /// Whether the span covers more than one slot.
+    pub fn is_linked(&self) -> bool;
+
+    /// The span as a topos passage (`John 3:36-4:2`); a span starting at an
+    /// introduction starts at verse 0.
+    pub fn passage(&self) -> Passage;
+
+    /// OSIS reference: `John.3.16` for one verse, `John.3.36-John.4.2` for a span.
+    pub fn osis_ref(&self) -> Option<String>;
 
 /// A lexicon / dictionary / glossary / daily devotional, keyed by strings.
 pub struct DictionaryModule { /* private fields */ }
@@ -749,7 +903,11 @@ impl DictionaryModule {
 
     /// Look up a Strong's number in a StrongsGreek/StrongsHebrew-style module,
     /// trying both the plain padded form (`00025`) and the prefixed one (`G0025`).
-    pub fn get_strongs(&self, s: &Strongs) -> Result<Option<Entry>>;
+    /// The number is a string: `G` or `H` (either case), digits, and an optional suffix
+    /// of letters (`G25`, `H0430a`); leading and trailing whitespace is ignored. Any
+    /// other string is `Ok(None)`. The keys tried, and their order, are in
+    /// `docs/spec/gaps.md`.
+    pub fn get_strongs(&self, number: &str) -> Result<Option<Entry>>;
 
     /// The first entry whose key sorts at or after `key` (for "type-ahead"
     /// navigation). Returns the key found and its entry.
@@ -760,6 +918,13 @@ impl DictionaryModule {
 
     /// Iterate `(key, entry)` pairs in key order.
     pub fn iter(&self) -> impl Iterator<Item = Result<(String, Entry)>> + '_;
+
+    /// The key the entry at sorted position `i` names with `@LINK` (the first link
+    /// only, as stored: in `.dat`, or for zLD in the entry text), or `None` when the
+    /// entry is not a link. [`iter`](Self::iter) and [`entry_at`](Self::entry_at)
+    /// follow links, so an alias reads as its target's text; this tells an alias
+    /// from an entry of its own.
+    pub fn link_at(&self, i: usize) -> Result<Option<String>>;
 
 /// A general book with a tree-shaped table of contents.
 pub struct GenBookModule { /* private fields */ }

@@ -4,7 +4,7 @@
 //!     mod2imp KJV > kjv.imp
 //!     cargo run --example compare_imp -- /usr/share/sword KJV kjv.imp
 use sword_modules::encoding::decode_text;
-use sword_modules::{IndexPos, Module, SwordLibrary, Testament};
+use sword_modules::{IndexPos, Module, ModuleKind, SwordLibrary, Testament};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -54,13 +54,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let actual: Vec<String> = match &module {
         Module::Verse(m) => {
             let v = m.versification();
+            // mod2imp leaves out a commentary slot whose index entry is identical to the
+            // previous slot's (a link; docs/spec/formats.md). Links aren't visible through
+            // the API, so the index file is read here directly.
+            let skip_links = module.kind() == ModuleKind::Commentary;
+            let dir = std::path::Path::new(root).join(conf.data_path().ok_or("no DataPath")?);
             let mut out = Vec::new();
             for t in [Testament::Old, Testament::New] {
                 if !m.has_testament(t) {
                     continue;
                 }
-                for slot in 0..v.slot_count(t) {
-                    if let Some(e) = m.at(IndexPos { testament: t, slot })? {
+                let slots = v.slot_count(t) as usize;
+                let index = if skip_links {
+                    let prefix = if t == Testament::Old { "ot" } else { "nt" };
+                    let letter = conf.block_type().file_letter();
+                    std::fs::read(dir.join(format!("{prefix}.vss"))).or_else(|_| std::fs::read(dir.join(format!("{prefix}.{letter}zv"))))?
+                } else {
+                    Vec::new()
+                };
+                let width = index.len() / slots;
+                let entry = |slot: usize| index.get(slot * width..(slot + 1) * width);
+                for slot in 0..slots {
+                    if skip_links && slot > 0 && entry(slot).is_some() && entry(slot) == entry(slot - 1) {
+                        continue;
+                    }
+                    if let Some(e) = m.at(IndexPos { testament: t, slot: slot as u32 })? {
                         out.push(e.raw);
                     }
                 }

@@ -1,7 +1,7 @@
 //! Small CLI showing the API.
 //!
 //!     cargo run --example sword -- <library-root> list
-//!     cargo run --example sword -- <library-root> verse KJV "John 3:16-18; 5" [--html|--strongs|--raw]
+//!     cargo run --example sword -- <library-root> verse KJV "John 3:16-18; 5"
 //!     cargo run --example sword -- <library-root> chapter KJV Ps 23
 //!     cargo run --example sword -- <library-root> dict StrongsGreek G25
 //!     cargo run --example sword -- <library-root> toc SomeGenBook
@@ -12,8 +12,7 @@
 //!     cargo run --example sword -- <library-root> install-url https://example.org/KJV.zip
 //!     cargo run --example sword -- <library-root> uninstall KJV
 use sword_modules::install::{self, Installer, ModuleStatus, Repository};
-use sword_modules::markup::HtmlRenderer;
-use sword_modules::{bible_data, Filter, Kind, Module, SwordLibrary, TextOptions};
+use sword_modules::{bible_data, Module, SwordLibrary};
 
 /// A repository given as a URL, or by name from CrossWire's master list.
 fn repository(installer: &Installer, spec: &str) -> Result<Repository, Box<dyn std::error::Error>> {
@@ -73,7 +72,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {}
     }
     let lib = SwordLibrary::open(&args[0])?;
-    let flag = |f: &str| args.iter().any(|a| a == f);
     match args[1].as_str() {
         "list" => {
             for c in lib.modules() {
@@ -82,7 +80,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     c.name(),
                     c.module_kind().map(|k| format!("{k:?}")).unwrap_or_default(),
                     c.get("ModDrv").unwrap_or(""),
-                    format!("{:?}", c.source_type()),
+                    c.source_type().as_str(),
                     c.description().unwrap_or("")
                 );
             }
@@ -94,33 +92,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if verses.is_empty() {
                 println!("(no text)");
             }
+            // Entries are printed as stored, markup included: parsing it is up to the caller.
             for (key, e) in verses {
-                let text = if flag("--raw") {
-                    e.raw.clone()
-                } else if flag("--html") {
-                    e.html()
-                } else {
-                    e.plain_text_with(&TextOptions { strongs: flag("--strongs"), filter: Filter::text().keep(Kind::Title), ..Default::default() })
-                };
-                println!("{key}  {text}");
+                println!("{key}  {}", e.raw);
             }
         }
         "chapter" => {
             let m = lib.open_module(&args[2])?.into_verse()?;
-            let mut html = HtmlRenderer::new();
             let book = bible_data().books().search(&args[3]).ok_or_else(|| format!("no book named {}", args[3]))?;
             for (k, e) in m.chapter(book, args[4].parse()?)? {
-                if flag("--html") {
-                    println!("<sup>{}</sup>{}", k.verse, html.render(&e.nodes()));
-                } else {
-                    println!("{:>3} {}", k.verse, e.plain_text_with(&TextOptions { filter: Filter::text().keep(Kind::Title), ..Default::default() }));
-                }
+                println!("{:>3} {}", k.verse, e.raw);
             }
         }
         "dict" => {
             let d = lib.open_module(&args[2])?.into_dictionary()?;
             match d.get(&args[3])? {
-                Some(e) => println!("{}", if flag("--raw") { e.raw } else { e.plain_text() }),
+                Some(e) => println!("{}", e.raw),
                 None => match d.get_nearest(&args[3])? {
                     Some((k, _)) => println!("(not found; nearest key: {k})"),
                     None => println!("(not found)"),
@@ -136,7 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "book" => {
             let g = lib.open_module(&args[2])?.into_genbook()?;
             match g.get(&args[3])? {
-                Some(e) => println!("{}", e.plain_text()),
+                Some(e) => println!("{}", e.raw),
                 None => println!("(not found)"),
             }
         }

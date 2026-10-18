@@ -5,8 +5,36 @@ use std::path::Path;
 use crate::encoding::{decode_cp1252, TextEncoding};
 use crate::error::{Error, Result};
 
-/// Markup used inside entries (`SourceType`).
-pub use topos_bible_markup::Markup;
+/// Markup used inside entries: the conf's `SourceType`. This crate only names it;
+/// parsing and rendering entries is left to the caller, which reads
+/// [`Entry::raw`](crate::Entry) with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Markup {
+    Osis,
+    Thml,
+    Gbf,
+    Tei,
+    /// `Plaintext`, and any `SourceType` this crate doesn't know.
+    Plaintext,
+}
+
+impl Markup {
+    const NAMES: [(&'static str, Markup); 5] = [("OSIS", Markup::Osis), ("ThML", Markup::Thml), ("GBF", Markup::Gbf), ("TEI", Markup::Tei), ("Plaintext", Markup::Plaintext)];
+
+    /// A markup by its `SourceType` name, ignoring case: `OSIS`, `ThML`, `GBF`, `TEI`,
+    /// `Plaintext` or `Plain`. `None` for any other name.
+    pub fn from_name(name: &str) -> Option<Markup> {
+        if name.eq_ignore_ascii_case("plain") {
+            return Some(Markup::Plaintext);
+        }
+        Self::NAMES.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|&(_, m)| m)
+    }
+
+    /// The `SourceType` name as confs spell it: `OSIS`, `ThML`, `GBF`, `TEI`, `Plaintext`.
+    pub fn as_str(self) -> &'static str {
+        Self::NAMES.iter().find(|&&(_, m)| m == self).map_or("Plaintext", |(n, _)| n)
+    }
+}
 
 /// One `[Section]` of a conf file: a module name and its ordered key/value entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,27 +54,21 @@ fn logical_lines(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < physical.len() {
-        let mut line = physical[i].trim_start_matches(is_blank).to_string();
-        // Byte offsets in `line` where each joined physical line begins.
-        let mut starts = vec![0usize];
+        let mut line = String::new();
+        // Only the physical line just taken decides whether the logical line goes on.
+        let mut current = physical[i].trim_start_matches(is_blank);
         i += 1;
         loop {
-            let kept = line.trim_end_matches(is_blank).len();
-            line.truncate(kept);
-            if !line.ends_with('\\') {
+            current = current.trim_end_matches(is_blank);
+            // A backslash that begins its physical line is ordinary text.
+            let Some(body) = current.strip_suffix('\\').filter(|b| !b.is_empty()) else {
+                line.push_str(current);
                 break;
-            }
-            let pos = line.len() - 1;
-            let line_start = starts.iter().rev().find(|&&s| s <= pos).copied().unwrap_or(0);
-            if pos == line_start {
-                // A backslash that begins its physical line is ordinary text.
-                break;
-            }
-            line.truncate(pos);
+            };
+            line.push_str(body);
             match physical.get(i) {
                 Some(next) => {
-                    starts.push(line.len());
-                    line.push_str(next);
+                    current = next;
                     i += 1;
                 }
                 None => break,
@@ -548,6 +570,27 @@ mod tests {
     }
 
     #[test]
+    fn blank_continuation_line_ends_the_line() {
+        // The observed examples in docs/spec/conf.md: (text after `About=`, About, Version).
+        let cases: [(&str, Option<&str>, Option<&str>); 8] = [
+            ("one\\\n two\n", Some("one two"), Some("1")),
+            ("a\\\\\n\n", Some("a\\"), Some("1")),
+            ("a\\\\\n   \n", Some("a\\"), Some("1")),
+            ("a\\\n \\\\\n\n", Some("a \\"), Some("1")),
+            ("a\\\n\t\nb\n", Some("a"), Some("1")),
+            ("a \\\n\\\n", Some("a \\"), Some("1")),
+            ("a\\\n  \\\nb\n", Some("a  b"), Some("1")),
+            ("a\\\n  \\\n", Some("a  Version=1"), None),
+        ];
+        for (text, about, version) in cases {
+            let c = ModuleConf::parse(&format!("[A]\nAbout={text}Version=1\n")).unwrap();
+            assert_eq!((c.get("About"), c.get("Version")), (about, version), "{text:?}");
+        }
+        let c = ModuleConf::parse("[A]\nAbout=a\\\n\t\nb\nVersion=1\n").unwrap();
+        assert_eq!(c.get("b"), Some(""));
+    }
+
+    #[test]
     fn defaults() {
         let c = ModuleConf::new("X", vec![("ModDrv".into(), "RawLD4".into())]);
         assert_eq!(c.source_type(), Markup::Gbf);
@@ -560,6 +603,22 @@ mod tests {
         assert_eq!(c.key_type(), "TreeKey");
         assert_eq!(c.module_kind().unwrap(), ModuleKind::Dictionary);
         assert!(!c.is_locked());
+    }
+
+    #[test]
+    fn source_types() {
+        let source = |v: &str| ModuleConf::new("X", vec![("SourceType".into(), v.into())]).source_type();
+        assert_eq!(source("OSIS"), Markup::Osis);
+        assert_eq!(source(" thml "), Markup::Thml);
+        assert_eq!(source("GBF"), Markup::Gbf);
+        assert_eq!(source("TEI"), Markup::Tei);
+        assert_eq!(source("Plain"), Markup::Plaintext);
+        assert_eq!(source("RTF"), Markup::Plaintext);
+        for m in [Markup::Osis, Markup::Thml, Markup::Gbf, Markup::Tei, Markup::Plaintext] {
+            assert_eq!(Markup::from_name(m.as_str()), Some(m));
+        }
+        assert_eq!(Markup::Thml.as_str(), "ThML");
+        assert_eq!(Markup::from_name("usx"), None);
     }
 
     #[test]

@@ -20,7 +20,7 @@ each step.
 Not replaced, because they were not ported: the storage-format readers, markup
 parsing, rendering, installer and transports. (Markup parsing and rendering have since
 moved to the `topos-bible-markup` crate in the topos repository, keeping this
-provenance.) They were written independently
+provenance, and this crate no longer depends on it: see "No markup dependency" below.) They were written independently
 from knowledge of the file formats and protocols (formats and protocols are
 functional interfaces, documented in `docs/spec/formats.md`). The Windows-1252
 table in `src/encoding.rs` is the published code-page standard.
@@ -53,6 +53,41 @@ enciphered (plain and personalised keys) modules produced by `osis2mod`, each
 compared entry by entry with `mod2imp`. All pass. The 15 real modules from
 Ubuntu's archive also still match libsword byte for byte.
 
+Those results were for the earlier, one-author code. **The two-party rewrite**
+(below) was checked the same way in October 2026, against libsword 1.9.0 (Arch
+Linux's `sword` and `python-sword` packages, used only through their programs and
+by calling the Python module), by a Claude (Opus 5.5) session that had not read
+libsword's source, headers or bindings source, any other SWORD reader, or this
+repository's code from before commit `c03a2f8`:
+
+* `tools/differential/run.py` (unchanged; it ran on Arch as written), full run:
+  200,000 normalisation cases, 20,000 dictionary keys, 621,118 index slots,
+  3,000 conf layouts, 3 LZSS modules (verse, chapter and book blocks) and
+  6 enciphered modules (3 personalised keys, 3 plain; LZSS and ZIP), each
+  module 16,722 entries compared with `mod2imp`. All pass. The first run found
+  109 of the 3,000 conf layouts read differently: the conf spec's continuation
+  rule was wrong for empty or whitespace-only continuation lines. The spec was
+  corrected from further black-box probes (`docs/spec/conf.md`, with a table of
+  observed examples) and the code fixed from it.
+* **Real modules.** Fifteen modules installed from CrossWire with libsword's own
+  `installmgr` into a scratch library (KJV, StrongsGreek, StrongsHebrew, MHC,
+  Easton, Josephus, Robinson, DRC, WLC, ChiUns, TR, Vulgate, Nave, Daily,
+  Pilgrim; zText, zCom4, zLD, RawLD and RawGenBook) were compared entry by entry
+  with `mod2imp` using `examples/compare_imp`: 206,939 entries, no mismatches
+  (StrongsHebrew has no `Encoding` and Latin-1 text, so it covers that path).
+  Two problems were found first and fixed spec-first: TR and WLC did not open,
+  because each ships an index for the testament it lacks without the data files
+  (libsword reads that testament as empty; `docs/spec/formats.md`), and MHC
+  compared as 32,355 entries against 5,506, because `mod2imp` leaves out a
+  commentary slot linked to the slot before it (the reader already agreed with
+  libsword; `compare_imp` now lists entries the way `mod2imp` does).
+* **Fixtures.** Every fixture module compared with a fresh `mod2imp` dump also
+  matches, except one entry in each of the three zLD fixtures (`LZip`, `LLzss`,
+  `LBz`): the `@LINK` stored inside a compressed entry, which the crate follows
+  on purpose (a deviation listed in `README.md`).
+* Still without a libsword reference: the RTF subset, UTF-16 modules, and
+  enciphered RawLD and RawGenBook modules.
+
 ## Limits — please read
 
 * **Not a two-team clean room.** A strict clean room separates the person who
@@ -66,9 +101,9 @@ Ubuntu's archive also still match libsword byte for byte.
 * **Versification data** consists of facts (book names, chapter and verse counts)
   obtained from libsword's runtime API. Facts are generally not protected by
   copyright, but the selection of systems mirrors SWORD's.
-* **History.** Commit `807670a` (tag `pre-cleanroom`) contains the ported GPL
-  code. Publish the `release` branch, a single squashed commit of the clean tree,
-  or rewrite history so that commit is not distributed.
+* **History.** Commit `9eb857f` (tag `pre-cleanroom`) contains the ported GPL
+  code. Publish the `release-cleanroom` branch (squashes of the clean tree, with no
+  earlier history), never `main`'s history or the tag.
 * This is not legal advice. If the licensing matters commercially, have it
   reviewed.
 
@@ -163,7 +198,8 @@ The details are in `docs/spec/gaps.md`; in short:
   spec's examples, UTF-16 and Latin-1 modules, RawLD/RawGenBook enciphering, and the
   less common versifications have no libsword reference here. Run
   `tools/differential/run.py` on a machine with `libsword-utils` and `python3-sword`
-  before relying on them.
+  before relying on them. (Since done, in October 2026: see "Evidence of equivalence"
+  above.)
 
 ### Limits of this rewrite
 
@@ -210,3 +246,69 @@ the old gaps paragraph about it, or this file's disclosure section. The lookup o
 reasoning for it are in `docs/spec/gaps.md` ("get_strongs rewritten by a second clean
 implementer"). It was tested against the clean topos-bible-markup in a scratch build, where
 `cargo test` passes.
+
+## Reading through `Files` (October 2026)
+
+The readers stopped opening files themselves: `src/files.rs` adds the `Files` trait (read a
+file, list a folder, open one to read at offsets) with `FsFiles` (a folder, as before) and
+`MemoryFiles`, and the drivers, `Module`, and `SwordLibrary` read through it, so logoxide can open
+a module from a zip in memory (and in WebAssembly). The interface went into `docs/spec/api.md`
+first. This is plumbing: no format, conf, normalisation, or versification rule changed, and
+`DataFile` reads the same bytes at the same offsets as before.
+
+It was written by a Claude (Opus 5.5) session working for logoxide that had not read libsword's
+source, headers, or bindings, nor any other SWORD reader, nor this repository's code from before
+the clean-room rewrite (only the current `src/`, `docs/spec/`, and the examples). It used
+libsword's compiled `mod2imp` once, black-box, to check that an odd entry of the ISV module (its
+John 1:0 holds Luke 23:56's text) is what libsword reads too. `cargo test` (with the real-library
+smoke test against CrossWire's KJV), `cargo clippy --all-targets -D warnings` with and without
+default features, `cargo +nightly fmt --check`, and a `wasm32-unknown-unknown` build without
+default features pass.
+
+## Linked verses as spans, and Strong's lexicon keys (October 2026)
+
+For logoxide's SWORD imports, which used to guess linked verses by comparing entries' text (and
+so merged notes that merely matched), `VerseModule::iter_spans` gives each run of linked slots
+once as a `VerseSpan` (first and last verse, entry, `EntryLocation`), and `VerseModule::location`
+gives a verse's location, so slots sharing an entry out of a run can be told apart from equal text
+stored twice. `DictionaryModule` gained `link_at` (an `@LINK` alias's target), `strongs_language`
+(`Feature=GreekDef`/`HebrewDef`), and `strongs_at` (a key as a Strong's number). The interface went
+into `docs/spec/api.md` first, with the run rules (never across a book; empty chapter
+introductions passed over), and `docs/spec/formats.md` records how libsword's writers lay out
+links. The link itself is the one `formats.md` already defined (identical index entries).
+
+Written by a Claude (Opus 5.5) session working for logoxide that had not read libsword's source,
+headers, or bindings, nor any other SWORD reader, nor this repository's code from before the
+clean-room rewrite (only the current `src/`, `docs/spec/`, and the tests). It used libsword
+1.9.0's compiled `osis2mod` and `imp2vs` black-box, on a small OSIS commentary and an imp file,
+reading the index files with a hex dump and slot numbers through the Python bindings'
+`VerseKey.getTestamentIndex`: `osis2mod` links only the verses an `osisID` names (an empty John 4:0
+between John 3:36 and 4:1), `imp2vs` every slot of a range (John 7:0 in `6:71-7:1`), and a link
+into another chapter or book points into the first slot's block. `iter_spans` reads those modules
+(RawCom, zCom with chapter blocks, RawText) as the spec says; the tests rebuild the same layouts
+synthetically. `cargo test`, `cargo clippy --all-targets -D warnings` with and without default
+features, `cargo +nightly fmt --check`, and a `wasm32-unknown-unknown` build without default
+features pass.
+
+## No markup dependency (October 2026)
+
+The crate stopped depending on `topos-bible-markup` (logoxide's PLAN-CRATES.md, decision C4; the
+markup crate moves to logoxide as `logoxide-markup`). `Markup` became the crate's own enum in
+`conf.rs` (SWORD's `SourceType`: OSIS, ThML, GBF, TEI, plain text), and an `Entry` is its `raw`
+text and `markup` only: the `markup` re-export, `Entry::nodes`, `plain_text`, `plain_text_with`,
+`html` and `strongs`, and `DictionaryModule::strongs_language` and `strongs_at` were removed.
+`get_strongs` takes the number as a string (`G25`, `H0430a`) instead of a markup `Strongs`, and
+tries the same keys in the same order (`docs/spec/gaps.md`). `iter_spans`, `EntryLocation`,
+`VerseSpan` and `link_at` stay, since they use only topos-bible. The interface went into
+`docs/spec/api.md` first. No format, conf, normalisation, or versification rule changed, and the
+markup an entry is given (named or sniffed) is decided as before; the markup parsing that was
+removed was never this crate's code (see "Not replaced" above).
+
+Written by a Claude (Opus 5.5) session working for logoxide that had not read libsword's source,
+headers, or bindings, nor any other SWORD reader, nor this repository's code from before the
+clean-room rewrite (only the current `src/`, `docs/spec/`, the tests and examples, and the
+`Markup` enum's declaration in topos-bible-markup, to keep its variant names). It changed only
+signatures and the parsing of `get_strongs`'s argument, not the lookup order. `cargo test`,
+`cargo clippy --all-targets -D warnings` with and without default features, `cargo +nightly fmt
+--check`, and `wasm32-unknown-unknown` builds without default features (and with `zip`, `bzip2`,
+`xz`) pass; logoxide's tests pass against it in a scratch build.

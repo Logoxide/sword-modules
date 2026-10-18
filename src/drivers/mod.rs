@@ -5,60 +5,63 @@ pub(crate) mod genbook;
 pub(crate) mod strkey;
 pub(crate) mod verse;
 
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::conf::CompressType;
 use crate::error::{Error, Result};
+use crate::files::{FileReader, Files};
 
 /// A data file read in pieces: opened once, then read at offsets.
-#[derive(Debug)]
 pub(crate) struct DataFile {
-    path: PathBuf,
-    len: u64,
-    file: Mutex<File>,
+    path: String,
+    reader: Box<dyn FileReader>,
+}
+
+impl std::fmt::Debug for DataFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DataFile").field("path", &self.path).field("size", &self.reader.size()).finish()
+    }
 }
 
 impl DataFile {
-    pub(crate) fn open(path: &Path) -> Result<DataFile> {
-        let file = File::open(path).map_err(|e| Error::io(path, e))?;
-        let len = file.metadata().map_err(|e| Error::io(path, e))?.len();
-        Ok(DataFile { path: path.to_path_buf(), len, file: Mutex::new(file) })
+    pub(crate) fn open(files: &dyn Files, path: &str) -> Result<DataFile> {
+        DataFile::open_optional(files, path)?.ok_or_else(|| Error::io(path, std::io::ErrorKind::NotFound.into()))
+    }
+
+    /// The file, or `None` when it does not exist.
+    pub(crate) fn open_optional(files: &dyn Files, path: &str) -> Result<Option<DataFile>> {
+        Ok(files.open(path)?.map(|reader| DataFile { path: path.to_string(), reader }))
+    }
+
+    fn len(&self) -> u64 {
+        self.reader.size()
     }
 
     /// `len` bytes at `offset`; reading past the end is corrupt data.
     pub(crate) fn read_at(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
-        if offset.checked_add(len as u64).is_none_or(|end| end > self.len) {
-            return Err(Error::Corrupt(format!("{}: {len} bytes at {offset} is past the end ({} bytes)", self.path.display(), self.len)));
+        if offset.checked_add(len as u64).is_none_or(|end| end > self.len()) {
+            return Err(Error::Corrupt(format!("{}: {len} bytes at {offset} is past the end ({} bytes)", self.path, self.len())));
         }
         let mut buf = vec![0u8; len];
-        let mut file = self.file.lock().map_err(|_| Error::Corrupt(format!("{}: reader poisoned", self.path.display())))?;
-        file.seek(SeekFrom::Start(offset)).map_err(|e| Error::io(&self.path, e))?;
-        file.read_exact(&mut buf).map_err(|e| Error::io(&self.path, e))?;
+        self.reader.read_at(offset, &mut buf).map_err(|e| Error::io(&self.path, e))?;
         Ok(buf)
     }
 
     /// Up to `len` bytes at `offset`, stopping at the end of the file.
     pub(crate) fn read_up_to(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
-        let available = self.len.saturating_sub(offset);
-        self.read_at(offset.min(self.len), len.min(usize::try_from(available).unwrap_or(usize::MAX)))
+        let available = self.len().saturating_sub(offset);
+        self.read_at(offset.min(self.len()), len.min(usize::try_from(available).unwrap_or(usize::MAX)))
     }
 }
 
 /// A whole (index) file.
-pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>> {
-    std::fs::read(path).map_err(|e| Error::io(path, e))
+pub(crate) fn read_file(files: &dyn Files, path: &str) -> Result<Vec<u8>> {
+    read_optional(files, path)?.ok_or_else(|| Error::io(path, std::io::ErrorKind::NotFound.into()))
 }
 
 /// A whole file, or `None` when it does not exist.
-pub(crate) fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
-    match std::fs::read(path) {
-        Ok(b) => Ok(Some(b)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(Error::io(path, e)),
-    }
+pub(crate) fn read_optional(files: &dyn Files, path: &str) -> Result<Option<Vec<u8>>> {
+    files.read(path)
 }
 
 pub(crate) fn u16_at(b: &[u8], at: usize) -> Option<u16> {

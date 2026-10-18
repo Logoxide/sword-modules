@@ -4,6 +4,9 @@
 //! Open a library (a directory with `mods.d/` and `modules/`) with [`SwordLibrary`], then
 //! a module by name. The formats and every compatibility rule are described in
 //! `docs/spec/`.
+//!
+//! Entries come as their stored text with the markup the conf names ([`Entry`]: `raw` and
+//! [`Markup`]); the crate parses no markup, so callers use whichever markup parser they like.
 
 mod cipher;
 mod compress;
@@ -11,6 +14,7 @@ pub mod conf;
 mod drivers;
 pub mod encoding;
 mod error;
+mod files;
 #[cfg(feature = "install")]
 pub mod install;
 mod library;
@@ -29,12 +33,9 @@ pub use error::{Error, Result};
 
 pub use library::SwordLibrary;
 
-/// Entry markup: one tree for OSIS, ThML, GBF and TEI, with plain text, HTML, filters and search.
-pub use topos_bible_markup as markup;
+pub use files::{FileReader, Files, FsFiles, MemoryFiles};
 
-pub use markup::{Filter, HtmlRenderer, Kind, Node, Strongs, TextOptions};
-
-pub use module::{DictionaryModule, Entry, GenBookModule, Module, VerseModule};
+pub use module::{DictionaryModule, Entry, EntryLocation, GenBookModule, Module, VerseModule, VerseSpan};
 
 pub use versification::{bible_data, IndexPos, Testament, VerseKey, Versification};
 

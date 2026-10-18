@@ -5,9 +5,10 @@ format behind AndBible, BibleTime, Xiphos, Ezra Bible App and others. Like JSwor
 (which AndBible uses), it is a native reimplementation, not an FFI wrapper around
 the C++ libsword, so it builds anywhere Rust does (Android, iOS, WASM).
 
-It is verified against libsword itself: every entry of 15 real modules (~300k
-entries) and of modules generated with libsword's own tools in every storage
-format is byte-identical to libsword's `mod2imp` output.
+It is verified against libsword itself: every entry of 15 real modules from
+CrossWire (~207k entries) and of modules generated with libsword's own tools in
+every storage format is byte-identical to libsword's `mod2imp` output (apart from
+the deliberate deviations below).
 
 ## What's supported
 
@@ -20,7 +21,7 @@ format is byte-identical to libsword's `mod2imp` output.
 | Compression | ZIP, LZSS, BZIP2, XZ (each a cargo feature except LZSS) |
 | Encryption | Sapphire II (`CipherKey`), including SWORD's obfuscated key format |
 | Versification | All 18 built-in systems (KJV, KJVA, NRSV, NRSVA, Synodal, SynodalProt, Vulg, German, Luther, Catholic, Catholic2, LXX, Orthodox, MT, Leningrad, Calvin, DarbyFr, Segond) |
-| Markup | OSIS, ThML, GBF, TEI, plain text → one tree model; plain-text and HTML renderers |
+| Markup | Named, not parsed: each entry is its stored text with the conf's `SourceType` (OSIS, ThML, GBF, TEI, plain text), sniffed when the conf has none |
 | Encodings | UTF-8, Latin-1 (as CP1252, like libsword), UTF-16LE |
 | Installing | CrossWire's master repository list, any SWORD repository over HTTPS/HTTP/FTP/`file://`, a module zip at any URL, local zips; update status, uninstall |
 
@@ -36,23 +37,18 @@ verse 0 are book and chapter introductions (`book_intro`, `chapter_intro`).
 ## Usage
 
 ```rust
-use sword_modules::{bible_data, markup, Kind, SwordLibrary, TextOptions, VerseKey};
+use sword_modules::{bible_data, Markup, SwordLibrary, VerseKey};
 
 let lib = SwordLibrary::open("/path/to/sword")?; // dir containing mods.d/ and modules/
 
 // Bibles and commentaries
 let kjv = lib.open_module("KJV")?.into_verse()?;
 for (key, entry) in kjv.passage(&bible_data().parse("Jn 3:16-18; 5").expect("a reference"))? {
-    println!("{key} {}", entry.plain_text());  // "John 3:16 For God so loved the world, …"
+    println!("{key} {}", entry.raw);           // "John 3:16 <w …>For</w> …", as stored
 }
 let john = bible_data().books().search("John").expect("a book");
 let e = kjv.verse(&VerseKey::new(john, 3, 16))?.expect("present");
-println!("{}", e.plain_text());                // "For God so loved the world, …"
-for s in e.strongs() { print!("{s} "); }        // G1063 G2316 …
-let nodes = e.nodes();                          // full tree
-for w in markup::find_all(&nodes, Kind::Word) {
-    println!("{} {:?} {:?}", w.text(), w.strongs(), w.morph());
-}
+assert_eq!(e.markup, Markup::Osis);            // the conf's SourceType; parse `e.raw` with it
 let psalms = bible_data().books().search("Ps").expect("a book");
 for (key, entry) in kjv.chapter(psalms, 23)? { /* verse 0 = heading/intro */ }
 for item in kjv.iter() { let (key, entry) = item?; /* whole module */ }
@@ -60,6 +56,7 @@ for item in kjv.iter() { let (key, entry) = item?; /* whole module */ }
 // Lexicons (libsword key rules: upper-casing, Strong's zero-padding, @LINK aliases)
 let greek = lib.open_module("StrongsGreek")?.into_dictionary()?;
 let agapao = greek.get("G25")?;                 // also "25", "00025"
+let agapao = greek.get_strongs("G25")?;         // tries 00025, then G0025
 
 // General books
 let book = lib.open_module("Pilgrim")?.into_genbook()?;
@@ -76,17 +73,34 @@ they always use KJV versification. Each verse's index entry names a file
 (`0000012`) in the module directory holding the note; file names that could point
 outside that directory are ignored.
 
-Markup comes from [`topos-bible-markup`](../topos/crates/topos-markup), re-exported as
-`sword_modules::markup`. HTML: `entry.html()` for one entry, or keep one
-`markup::HtmlRenderer` for a whole passage so red-letter text that spans verses (via OSIS
-milestones or an unclosed `<q>`) stays red, and `wrap` it in `<div class="topos">`. Classes
-are prefixed (`topos-w`, `topos-note topos-crossref`, `topos-woj`, `topos-added`, …; the
-prefix is configurable) and data attributes are not (`data-strong`, `data-osis-ref`). A
-`markup::Filter` chooses which elements are rendered: `TextOptions { filter:
-Filter::text().keep(Kind::Note), ..Default::default() }` adds notes to plain text.
+The crate doesn't parse markup and depends on no markup crate. An `Entry` is `raw` (the
+stored text, deciphered, normalised and decoded to UTF-8, markup included) and `markup` (a
+`Markup`: the conf's `SourceType`, or for a conf without one, GBF unless the text has XML end
+tags, then TEI, OSIS or ThML by telltale elements). Parse and render it with whichever markup
+library you use (logoxide uses its `logoxide-markup`).
 
 `examples/sword.rs` is a small CLI (`list`, `verse`, `chapter`, `dict`, `toc`, `book`,
 `repos`, `remote`, `install`, `install-url`, `uninstall`).
+
+### Without a file system
+
+Every file is read through the `Files` trait (read a file, list a folder, and optionally open
+one to read at offsets), so a library needn't be a folder: `SwordLibrary::open` uses `FsFiles`,
+and `SwordLibrary::open_files` takes any other, such as `MemoryFiles` filled from a module zip.
+That's how it runs in WebAssembly (build with `--no-default-features --features
+zip,bzip2,xz`; the installer needs a file system):
+
+```rust
+use std::sync::Arc;
+use sword_modules::{MemoryFiles, SwordLibrary};
+
+let mut files = MemoryFiles::new();
+for (path, bytes) in unzipped_module {          // e.g. packages/KJV.zip's entries
+    files.insert(path, bytes);
+}
+let lib = SwordLibrary::open_files(Arc::new(files))?;
+let kjv = lib.open_module("KJV")?.into_verse()?;
+```
 
 ## Installing modules
 
@@ -171,11 +185,9 @@ adds `.zdx`/`.zdt` blocks, each holding a small table of NUL-terminated entries.
 
 **Markup** is stored per verse/entry and is *not* well-formed XML: quotes and
 paragraphs that span verses appear as `sID`/`eID` milestones or as a start tag in one
-verse and its end tag in another. The parser uses `quick-xml` for tokenising and a
-tolerant tree builder that marks orphaned ends (`milestone == Some(End)`) and
-unclosed elements (`unclosed == true`). GBF is a non-XML token format (`<FR>…<Fr>`,
-`word<WG25>`); ThML and GBF Strong's tags follow the word they tag, so they are
-turned into synthetic `w` elements to match OSIS.
+verse and its end tag in another, so a parser of entries has to be tolerant. GBF is a
+non-XML token format (`<FR>…<Fr>`, `word<WG25>`); ThML and GBF Strong's tags follow the
+word they tag.
 
 ## Deviations from libsword (deliberate)
 
@@ -216,7 +228,8 @@ mod2imp KJV > kjv.imp && cargo run --example compare_imp -- ~/.sword KJV kjv.imp
 
 `tools/differential/run.py` runs randomised black-box comparisons of the routines
 in `docs/spec/` against libsword's compiled tools and Python bindings
-(needs `libsword-utils` and `python3-sword`).
+(needs `libsword-utils` and `python3-sword` on Ubuntu, `sword` and `python-sword`
+on Arch).
 
 Versification data: `tools/extract_v11n.py` queries libsword's runtime API for
 each system's books and verse counts into `data/versification.json`, and

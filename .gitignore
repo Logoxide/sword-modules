@@ -1,1 +1,5 @@
 /target
+/.cargo/
+
+# The owner's notes for Claude Code, kept local
+CLAUDE.md

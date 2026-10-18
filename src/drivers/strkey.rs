@@ -1,10 +1,9 @@
 //! String-keyed storage: RawLD, RawLD4 and zLD.
 
-use std::path::Path;
-
 use super::{read_file, size_at, u32_at, BlockReader, DataFile};
 use crate::conf::CompressType;
 use crate::error::{Error, Result};
+use crate::files::Files;
 
 /// zLD's compressed blocks.
 #[derive(Debug)]
@@ -44,20 +43,16 @@ pub(crate) fn link_target(body: &[u8]) -> Option<&[u8]> {
 
 impl DictStore {
     /// `compress` is `Some` for zLD.
-    pub(crate) fn open(prefix: &Path, wide: bool, compress: Option<CompressType>, cipher: Option<Vec<u8>>) -> Result<DictStore> {
-        let with_ext = |ext: &str| {
-            let mut p = prefix.as_os_str().to_owned();
-            p.push(ext);
-            std::path::PathBuf::from(p)
-        };
-        let index = read_file(&with_ext(".idx"))?;
-        let dat = DataFile::open(&with_ext(".dat"))?;
+    pub(crate) fn open(files: &dyn Files, prefix: &str, wide: bool, compress: Option<CompressType>, cipher: Option<Vec<u8>>) -> Result<DictStore> {
+        let with_ext = |ext: &str| format!("{prefix}{ext}");
+        let index = read_file(files, &with_ext(".idx"))?;
+        let dat = DataFile::open(files, &with_ext(".dat"))?;
         let blocks = match compress {
-            Some(compress) => Some(Blocks { index: read_file(&with_ext(".zdx"))?, data: DataFile::open(&with_ext(".zdt"))?, reader: BlockReader::new(compress, cipher.clone()) }),
+            Some(compress) => Some(Blocks { index: read_file(files, &with_ext(".zdx"))?, data: DataFile::open(files, &with_ext(".zdt"))?, reader: BlockReader::new(compress, cipher.clone()) }),
             None => None,
         };
         let width = if wide || blocks.is_some() { 8 } else { 6 };
-        Ok(DictStore { prefix: prefix.display().to_string(), index, width, dat, blocks, cipher })
+        Ok(DictStore { prefix: prefix.to_string(), index, width, dat, blocks, cipher })
     }
 
     pub(crate) fn len(&self) -> usize {

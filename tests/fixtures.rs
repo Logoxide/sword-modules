@@ -76,14 +76,12 @@ fn verse_lookup_and_markup() {
     assert_eq!(m.versification().name(), "KJVA");
     let e = m.verse(&key("John", 3, 14)).unwrap().unwrap();
     assert_eq!(e.markup, Markup::Osis);
-    let nodes = e.nodes();
-    // generator: every 7th verse is words of Jesus, every 5th has a cross-reference note
-    assert!(!markup::find_all(&nodes, Kind::WordsOfJesus).is_empty());
-    assert!(e.plain_text().ends_with("&end."), "entities decoded");
+    // generator: every 7th verse is words of Jesus, every 5th has a cross-reference note;
+    // the markup is passed on as stored, entities and all
+    assert!(e.raw.starts_with(r#"<q marker="" who="Jesus">"#), "{}", e.raw);
+    assert!(e.raw.ends_with("</q> &amp;end."), "{}", e.raw);
     let v15 = m.verse(&key("John", 3, 15)).unwrap().unwrap();
-    assert!(markup::find_all(&v15.nodes(), Kind::Note)[0].is_cross_reference());
-    assert!(!v15.plain_text().contains("John 3:16"));
-    assert!(v15.plain_text_with(&TextOptions { filter: Filter::text().keep(Kind::Note), ..Default::default() }).contains("[John 3:16]"));
+    assert!(v15.raw.contains(r#"<note n="a" type="crossReference"><reference osisRef="John.3.16">John 3:16</reference></note>"#), "{}", v15.raw);
     // apocrypha in KJVA, intros, out-of-range
     assert!(m.verse(&key("Tob", 1, 1)).unwrap().is_some());
     assert!(m.verse(&key("John", 3, 99)).unwrap().is_none());
@@ -154,8 +152,12 @@ fn dictionaries() {
     assert_eq!(d.get("alias").unwrap().unwrap().raw, d.get("aaron").unwrap().unwrap().raw);
     assert!(d.get("nothing-here").unwrap().is_none());
     assert_eq!(d.get_nearest("word1").unwrap().unwrap().0, "WORD1");
-    let strongs = Strongs::parse("G25").unwrap();
-    assert!(d.get_strongs(&strongs).unwrap().is_some());
+    for number in ["G25", "g0025", " H25 ", "G25a"] {
+        assert!(d.get_strongs(number).unwrap().unwrap().raw.contains("Definition of 25"), "{number}");
+    }
+    for number in ["G26", "25", "X25", "G", "G25-", "AARON"] {
+        assert!(d.get_strongs(number).unwrap().is_none(), "{number}");
+    }
 
     let cs = lib.open_module("LCase").unwrap().into_dictionary().unwrap();
     assert!(cs.get("aaron").unwrap().is_some());
@@ -171,7 +173,9 @@ fn general_book() {
     assert_eq!(toc[1], (2, "Chapter 1".to_string()));
     let node = g.find("/Part 2/Chapter 3").unwrap().unwrap();
     assert_eq!(g.path(&node).unwrap(), "/Part 2/Chapter 3");
-    assert_eq!(g.text(&node).unwrap().unwrap().plain_text(), "Text of part 2 chapter 3 — ünïcödé");
+    let text = g.text(&node).unwrap().unwrap();
+    assert_eq!(text.raw, "<p>Text of part 2 chapter 3 — ünïcödé</p>");
+    assert_eq!(text.markup, Markup::Thml);
     assert!(g.find("/Part 9").unwrap().is_none());
     let parent = g.parent(&node).unwrap().unwrap();
     assert_eq!(parent.name, "Part 2");
@@ -197,8 +201,8 @@ fn real_library_smoke_test() {
             Err(e) => panic!("{}: {e}", conf.name()),
         };
         let n = match &m {
-            Module::Verse(v) => v.iter().map(|r| r.unwrap()).map(|(_, e)| e.nodes().len()).count(),
-            Module::Dictionary(d) => d.iter().map(|r| r.unwrap()).map(|(_, e)| e.nodes().len()).count(),
+            Module::Verse(v) => v.iter().map(|r| r.unwrap()).map(|(_, e)| e.raw.len()).count(),
+            Module::Dictionary(d) => d.iter().map(|r| r.unwrap()).map(|(_, e)| e.raw.len()).count(),
             Module::GenBook(g) => g.walk().unwrap().len(),
         };
         println!("{:<16} {n} entries", conf.name());
@@ -220,6 +224,206 @@ fn personal_notes_rawfiles() {
     assert_eq!(get("Gen", 1, 2), None);
     let all: Vec<String> = m.iter().map(|r| r.unwrap().0.to_string()).collect();
     assert_eq!(all, ["Genesis 1:1", "Matthew 5:3", "John 3:16"]);
-    let e = m.verse(&key("Gen", 1, 1)).unwrap().unwrap();
-    assert_eq!(e.plain_text(), "My first note — ünïcödé");
+}
+
+/// A testament whose index exists but whose data file or block index is missing reads as
+/// empty, and the other testament is unaffected (docs/spec/formats.md; CrossWire's TR and
+/// WLC ship such indexes).
+#[test]
+fn testament_without_data_files_is_empty() {
+    let base = all_verses(&lib().open_module("TRaw").unwrap().into_verse().unwrap());
+    let cases: [(&str, &str, &[&str], Testament); 4] = [
+        ("TZipBook", "ztext", &["ot.bzz"], Testament::Old),
+        ("TZipBook", "ztext", &["ot.bzs"], Testament::Old),
+        ("TZipBook", "ztext", &["nt.bzs", "nt.bzz"], Testament::New),
+        ("TRaw", "rawtext", &["ot"], Testament::Old),
+    ];
+    for (i, (name, dir, remove, missing)) in cases.into_iter().enumerate() {
+        let lib_root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("missing-data-{i}"));
+        let _ = std::fs::remove_dir_all(&lib_root);
+        let data = lib_root.join("modules/texts").join(dir).join(name);
+        std::fs::create_dir_all(&data).unwrap();
+        for f in std::fs::read_dir(root().join("modules/texts").join(dir).join(name)).unwrap() {
+            let f = f.unwrap();
+            let file_name = f.file_name().into_string().unwrap();
+            if !remove.contains(&file_name.as_str()) {
+                std::fs::copy(f.path(), data.join(&file_name)).unwrap();
+            }
+        }
+        let conf = ModuleConf::from_file(root().join("mods.d").join(format!("{name}.conf"))).unwrap();
+        let m = Module::open(&lib_root, conf).unwrap_or_else(|e| panic!("{name} without {remove:?}: {e}")).into_verse().unwrap();
+        assert!(!m.has_testament(missing), "{name} without {remove:?}");
+        let present = match missing {
+            Testament::Old => Testament::New,
+            Testament::New => Testament::Old,
+        };
+        assert!(m.has_testament(present));
+        let expected: Vec<_> = base.iter().filter(|(k, _)| m.versification().index_of(k).unwrap().testament == present).cloned().collect();
+        assert!(!expected.is_empty());
+        assert_eq!(all_verses(&m), expected, "{name} without {remove:?}");
+        let gone = if missing == Testament::Old { key("Gen", 1, 1) } else { key("Matt", 1, 1) };
+        assert!(m.verse(&gone).unwrap().is_none());
+    }
+}
+
+/// Linked entries: slots with identical index entries all read as the shared entry, and
+/// equal text in separate entries is still two entries (docs/spec/formats.md). The layout
+/// is the one libsword's `linkEntry` produced for a RawCom module.
+#[test]
+fn linked_commentary_entries() {
+    let lib_root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("linked-entries");
+    let _ = std::fs::remove_dir_all(&lib_root);
+    let data = lib_root.join("modules/comments/rawcom/linked");
+    std::fs::create_dir_all(&data).unwrap();
+    let conf = ModuleConf::parse("[Linked]\nDataPath=./modules/comments/rawcom/linked/\nModDrv=RawCom\nSourceType=OSIS\nEncoding=UTF-8\n").unwrap();
+    // Gen 1:1–1:8 are slots 4–11 in KJV; (offset, length) per verse.
+    let entries: [(u32, u16); 8] = [(0, 3), (0, 3), (4, 5), (0, 3), (4, 5), (0, 0), (10, 4), (15, 4)];
+    std::fs::write(data.join("ot"), "one\nthree\nsame\nsame\n").unwrap();
+    let slots = 24115;
+    let mut index = vec![0u8; slots * 6];
+    for (i, (offset, len)) in entries.iter().enumerate() {
+        let at = (4 + i) * 6;
+        index[at..at + 4].copy_from_slice(&offset.to_le_bytes());
+        index[at + 4..at + 6].copy_from_slice(&len.to_le_bytes());
+    }
+    std::fs::write(data.join("ot.vss"), index).unwrap();
+    let m = Module::open(&lib_root, conf).unwrap().into_verse().unwrap();
+    let texts: Vec<Option<String>> = (1..=8).map(|v| m.verse(&key("Gen", 1, v)).unwrap().map(|e| e.raw)).collect();
+    let expected = [Some("one"), Some("one"), Some("three"), Some("one"), Some("three"), None, Some("same"), Some("same")];
+    assert_eq!(texts, expected.map(|t| t.map(String::from)));
+    assert_eq!(all_verses(&m).len(), 7);
+}
+
+/// A New-Testament-only KJV commentary (RawCom, or zCom with all its text in one ZIP
+/// block) from `(verse, stored entry)` pairs: verses naming the same
+/// stored entry get identical index entries, as libsword's `osis2mod` and `imp2vs` link
+/// them (docs/spec/formats.md).
+fn linked_module(name: &str, compressed: bool, verses: &[(VerseKey, usize)], stored: &[&str]) -> VerseModule {
+    use std::io::Write;
+    let lib_root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("spans-{name}"));
+    let _ = std::fs::remove_dir_all(&lib_root);
+    let data = lib_root.join("modules/comments/span").join(name);
+    std::fs::create_dir_all(&data).unwrap();
+    let kjv = Versification::kjv();
+    let mut text = Vec::new();
+    let mut at = Vec::new();
+    for s in stored {
+        at.push((text.len() as u32, s.len() as u32));
+        text.extend_from_slice(s.as_bytes());
+        text.push(b'\n');
+    }
+    let slots = kjv.slot_count(Testament::New) as usize;
+    let width = if compressed { 10 } else { 6 };
+    let mut index = vec![0u8; slots * width];
+    for (key, n) in verses {
+        let pos = kjv.index_of(key).unwrap();
+        assert_eq!(pos.testament, Testament::New);
+        let (offset, len) = at[*n];
+        let i = pos.slot as usize * width;
+        if compressed {
+            index[i + 4..i + 8].copy_from_slice(&offset.to_le_bytes());
+            index[i + 8..i + 10].copy_from_slice(&(len as u16).to_le_bytes());
+        } else {
+            index[i..i + 4].copy_from_slice(&offset.to_le_bytes());
+            index[i + 4..i + 6].copy_from_slice(&(len as u16).to_le_bytes());
+        }
+    }
+    let conf = if compressed {
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        z.write_all(&text).unwrap();
+        let block = z.finish().unwrap();
+        let mut blocks = Vec::new();
+        for n in [0u32, block.len() as u32, text.len() as u32] {
+            blocks.extend_from_slice(&n.to_le_bytes());
+        }
+        std::fs::write(data.join("nt.bzv"), &index).unwrap();
+        std::fs::write(data.join("nt.bzs"), blocks).unwrap();
+        std::fs::write(data.join("nt.bzz"), block).unwrap();
+        format!("[{name}]\nDataPath=./modules/comments/span/{name}/\nModDrv=zCom\nCompressType=ZIP\nBlockType=BOOK\nSourceType=OSIS\nEncoding=UTF-8\n")
+    } else {
+        std::fs::write(data.join("nt.vss"), &index).unwrap();
+        std::fs::write(data.join("nt"), &text).unwrap();
+        format!("[{name}]\nDataPath=./modules/comments/span/{name}/\nModDrv=RawCom\nSourceType=OSIS\nEncoding=UTF-8\n")
+    };
+    Module::open(&lib_root, ModuleConf::parse(&conf).unwrap()).unwrap().into_verse().unwrap()
+}
+
+/// `iter_spans` groups consecutive linked slots into one span: across an empty chapter
+/// introduction (osis2mod's layout) or a linked one (imp2vs's), never across a book, and
+/// slots sharing an entry out of a run are separate spans with one location.
+#[test]
+fn linked_entries_as_spans() {
+    let j = |c, v| key("John", c, v);
+    let verses = [
+        (j(3, 16), 0),
+        (j(3, 17), 0),
+        (j(3, 18), 1),
+        (j(3, 19), 0),
+        (j(3, 36), 2),
+        (j(4, 1), 2),
+        (j(4, 2), 2),
+        (j(5, 0), 3),
+        (j(5, 1), 3),
+        (j(6, 71), 4),
+        (j(7, 0), 4),
+        (j(7, 1), 4),
+        (j(8, 1), 5),
+        (j(8, 2), 6),
+        (j(9, 41), 7),
+        (j(10, 0), 8),
+        (j(10, 1), 7),
+        (j(21, 25), 9),
+        (key("Acts", 1, 1), 9),
+    ];
+    let stored = ["Range", "Other", "Cross chapter", "Intro and verse", "Imp range", "same", "same", "Broken", "Own intro", "Cross book"];
+    for compressed in [false, true] {
+        let m = linked_module(if compressed { "ZSpans" } else { "Spans" }, compressed, &verses, &stored);
+        let spans: Vec<VerseSpan> = m.iter_spans().collect::<Result<_>>().unwrap();
+        let got: Vec<(String, String)> = spans.iter().map(|s| (s.osis_ref().unwrap(), s.entry.raw.clone())).collect();
+        let expected = [
+            ("John.3.16-John.3.17", "Range"),
+            ("John.3.18", "Other"),
+            ("John.3.19", "Range"),
+            ("John.3.36-John.4.2", "Cross chapter"),
+            ("John.5.0-John.5.1", "Intro and verse"),
+            ("John.6.71-John.7.1", "Imp range"),
+            ("John.8.1", "same"),
+            ("John.8.2", "same"),
+            ("John.9.41", "Broken"),
+            ("John.10.0", "Own intro"),
+            ("John.10.1", "Broken"),
+            ("John.21.25", "Cross book"),
+            ("Acts.1.1", "Cross book"),
+        ];
+        assert_eq!(got, expected.map(|(a, b)| (a.to_string(), b.to_string())), "compressed: {compressed}");
+        // Locations: equal for a shared entry, different for equal text stored twice.
+        assert_eq!(spans[0].location, spans[2].location);
+        assert_ne!(spans[6].location, spans[7].location);
+        assert_eq!(spans[11].location, spans[12].location);
+        assert_eq!(m.location(&j(3, 17)), Some(spans[0].location));
+        assert_eq!(m.location(&j(4, 0)), None);
+        assert!(spans[0].is_linked() && !spans[1].is_linked());
+        let books = bible_data().books();
+        assert_eq!(spans[3].passage().to_osis(books).unwrap(), "John.3.36-John.4.2");
+        assert_eq!(spans[0].passage().to_osis(books).unwrap(), "John.3.16-John.3.17");
+        assert_eq!(spans[1].passage().to_osis(books).unwrap(), "John.3.18");
+        // Every linked verse still reads on its own, and iter() lists each slot.
+        assert_eq!(m.verse(&j(4, 2)).unwrap().unwrap().raw, "Cross chapter");
+        assert_eq!(all_verses(&m).len(), verses.len());
+    }
+}
+
+/// `link_at` tells an `@LINK` alias from an entry of its own in every dictionary format.
+#[test]
+fn dictionary_links() {
+    let lib = lib();
+    for name in ["LRaw", "LRaw4", "LZip", "LLzss", "LBz"] {
+        let d = lib.open_module(name).unwrap().into_dictionary().unwrap();
+        let keys = d.keys().unwrap();
+        let alias = keys.iter().position(|k| k == "ALIAS").unwrap();
+        assert_eq!(d.link_at(alias).unwrap().as_deref().map(str::to_uppercase).as_deref(), Some("AARON"), "{name}");
+        let aaron = keys.iter().position(|k| k == "AARON").unwrap();
+        assert_eq!(d.link_at(aaron).unwrap(), None, "{name}");
+        assert_eq!(d.link_at(keys.len()).unwrap(), None);
+    }
 }
